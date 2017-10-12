@@ -82,66 +82,69 @@ void run() {
 
   std::cout << "load model.." << std::endl;
   NetDef full_init_model, full_predict_model;
+  ModelUtil full(full_init_model, full_predict_model);
   NetDef init_model[kRunNum], predict_model[kRunNum];
+  ModelUtil models[kRunNum] = {
+      {init_model[kRunTrain], predict_model[kRunTrain]},
+      {init_model[kRunTest], predict_model[kRunTest]},
+      {init_model[kRunValidate], predict_model[kRunValidate]},
+  };
   for (int i = 0; i < kRunNum; i++) {
-    init_model[i].set_name(name_for_run[i] + "_init_model");
-    predict_model[i].set_name(name_for_run[i] + "_predict_model");
+    models[i].init.SetName(name_for_run[i] + "_init_model");
+    models[i].predict.SetName(name_for_run[i] + "_predict_model");
   }
-  Keeper(FLAGS_model).AddModel(full_init_model, full_predict_model, true);
+  Keeper(FLAGS_model).AddModel(full, true);
 
-  NetUtil(full_predict_model).CheckLayerAvailable(FLAGS_layer);
+  full.predict.CheckLayerAvailable(FLAGS_layer);
 
   NetDef first_init_model, first_predict_model, second_init_model,
       second_predict_model;
-  split_model(full_init_model, full_predict_model, FLAGS_layer,
-              first_init_model, first_predict_model, second_init_model,
-              second_predict_model, FLAGS_device != "cudnn");
+  ModelUtil first(first_init_model, first_predict_model);
+  ModelUtil second(second_init_model, second_predict_model);
+  full.Split(FLAGS_layer, first, second, FLAGS_device != "cudnn");
 
   if (FLAGS_device != "cpu") {
-    NetUtil(first_init_model).SetDeviceCUDA();
-    NetUtil(first_predict_model).SetDeviceCUDA();
+    first.init.SetDeviceCUDA();
+    first.predict.SetDeviceCUDA();
   }
 
-  pre_process(image_files, db_paths, first_init_model, first_predict_model,
+  pre_process(image_files, db_paths, first.init.net, first.predict.net,
               FLAGS_db_type, FLAGS_batch_size, FLAGS_size_to_fit);
   load_time += clock();
 
   for (int i = 0; i < kRunNum; i++) {
-    ModelUtil(init_model[i], predict_model[i])
-        .AddDatabaseOps(name_for_run[i], FLAGS_layer, db_paths[i],
-                        FLAGS_db_type, FLAGS_batch_size);
+    models[i].AddDatabaseOps(name_for_run[i], FLAGS_layer, db_paths[i],
+                             FLAGS_db_type, FLAGS_batch_size);
   }
-  copy_train_model(second_init_model, second_predict_model, FLAGS_layer,
-                   class_labels.size(), init_model[kRunTrain],
-                   predict_model[kRunTrain]);
-  copy_test_model(second_predict_model, predict_model[kRunValidate]);
-  copy_test_model(second_predict_model, predict_model[kRunTest]);
+  second.CopyTrain(FLAGS_layer, class_labels.size(), models[kRunTrain]);
+  copy_test_model(second.predict.net, models[kRunValidate].predict.net);
+  copy_test_model(second.predict.net, models[kRunTest].predict.net);
 
-  auto output = predict_model[kRunTrain].external_output(0);
+  auto output = models[kRunTrain].predict.Output(0);
   if (FLAGS_reshape_output) {
     auto output_reshaped = output + "_reshaped";
     for (int i = 0; i < kRunNum; i++) {
-      NetUtil(predict_model[i]).AddReshapeOp(output, output_reshaped, {0, -1});
+      models[i].predict.AddReshapeOp(output, output_reshaped, {0, -1});
     }
     output = output_reshaped;
   }
 
-  ModelUtil(init_model[kRunTrain], predict_model[kRunTrain])
-      .AddTrainOps(output, FLAGS_learning_rate, FLAGS_optimizer);
-  ModelUtil(second_predict_model, predict_model[kRunValidate])
+  models[kRunTrain].AddTrainOps(output, FLAGS_learning_rate, FLAGS_optimizer);
+  ModelUtil(second.predict.net, models[kRunValidate].predict.net)
       .AddTestOps(output);
-  ModelUtil(second_predict_model, predict_model[kRunTest]).AddTestOps(output);
+  ModelUtil(second.predict.net, models[kRunTest].predict.net)
+      .AddTestOps(output);
 
   if (FLAGS_device != "cpu") {
     for (int i = 0; i < kRunNum; i++) {
-      NetUtil(init_model[i]).SetDeviceCUDA();
-      NetUtil(predict_model[i]).SetDeviceCUDA();
+      models[i].init.SetDeviceCUDA();
+      models[i].predict.SetDeviceCUDA();
     }
   }
 
   if (FLAGS_dump_model) {
-    std::cout << NetUtil(init_model[kRunTrain]).Short();
-    std::cout << NetUtil(predict_model[kRunTrain]).Short();
+    std::cout << models[kRunTrain].init.Short();
+    std::cout << models[kRunTrain].predict.Short();
   }
 
   std::cout << std::endl;
@@ -149,9 +152,9 @@ void run() {
   Workspace workspace("tmp");
   unique_ptr<caffe2::NetBase> predict_net[kRunNum];
   for (int i = 0; i < kRunNum; i++) {
-    auto init_net = CreateNet(init_model[i], &workspace);
+    auto init_net = CreateNet(models[i].init.net, &workspace);
     init_net->Run();
-    predict_net[i] = CreateNet(predict_model[i], &workspace);
+    predict_net[i] = CreateNet(models[i].predict.net, &workspace);
   }
 
   clock_t train_time = 0;
@@ -208,13 +211,14 @@ void run() {
   }
 
   NetDef deploy_init_model;  // the final initialization model
-  deploy_init_model.set_name("retrain_" + full_init_model.name());
-  for (const auto &op : full_init_model.op()) {
+  ModelUtil deploy(deploy_init_model, full.predict.net);
+  deploy.init.SetName("retrain_" + full.init.net.name());
+  for (const auto &op : deploy.init.net.op()) {
     auto &output = op.output(0);
     auto blob = workspace.GetBlob(output);
     if (blob) {
       auto tensor = BlobUtil(*blob).Get();
-      auto init_op = deploy_init_model.add_op();
+      auto init_op = deploy.init.net.add_op();
       init_op->set_type("GivenTensorFill");
       auto arg1 = init_op->add_arg();
       arg1->set_name("shape");
@@ -229,12 +233,12 @@ void run() {
       }
       init_op->add_output(output);
     } else {
-      deploy_init_model.add_op()->CopyFrom(op);
+      deploy.init.net.add_op()->CopyFrom(op);
     }
   }
 
-  WriteProtoToBinaryFile(deploy_init_model, path_prefix + "init_net.pb");
-  WriteProtoToBinaryFile(full_predict_model, path_prefix + "predict_net.pb");
+  WriteProtoToBinaryFile(deploy.init.net, path_prefix + "init_net.pb");
+  WriteProtoToBinaryFile(deploy.predict.net, path_prefix + "predict_net.pb");
   auto init_size = std::ifstream(path_prefix + "init_net.pb",
                                  std::ifstream::ate | std::ifstream::binary)
                        .tellg();

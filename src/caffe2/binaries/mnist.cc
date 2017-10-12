@@ -200,8 +200,8 @@ void run() {
 
   // >>> train_model = model_helper.ModelHelper(name="mnist_train",
   // arg_scope={"order": "NCHW"})
-  NetDef initTrainModel, predictTrainModel;
-  ModelUtil trainModel(initTrainModel, predictTrainModel, "mnist_train");
+  NetDef train_init_model, train_predict_model;
+  ModelUtil trainModel(train_init_model, train_predict_model, "mnist_train");
 
   // >>> data, label = AddInput(train_model, batch_size=64,
   // db=os.path.join(data_folder, 'mnist-train-nchw-leveldb'),
@@ -219,8 +219,8 @@ void run() {
 
   // >>> test_model = model_helper.ModelHelper(name="mnist_test",
   // arg_scope=arg_scope, init_params=False)
-  NetDef initTestModel, predictTestModel;
-  ModelUtil testModel(initTestModel, predictTestModel, "mnist_test");
+  NetDef test_init_model, test_predict_model;
+  ModelUtil testModel(test_init_model, test_predict_model, "mnist_test");
 
   // >>> data, label = AddInput(test_model, batch_size=100,
   // db=os.path.join(data_folder, 'mnist-test-nchw-leveldb'), db_type='leveldb')
@@ -234,30 +234,30 @@ void run() {
 
   // >>> deploy_model = model_helper.ModelHelper(name="mnist_deploy",
   // arg_scope=arg_scope, init_params=False)
-  NetDef initDeployModel, predictDeployModel;
-  ModelUtil deployModel(initDeployModel, predictDeployModel, "mnist_model");
-  predictDeployModel.add_external_input("data");
+  NetDef deploy_init_model, deploy_predict_model;
+  ModelUtil deployModel(deploy_init_model, deploy_predict_model, "mnist_model");
+  deployModel.predict.AddInput("data");
 
   // >>> AddLeNetModel(deploy_model, "data")
   AddLeNetModel(deployModel, true);
 
 #ifdef WITH_CUDA
   if (!FLAGS_force_cpu) {
-    initTrainModel.mutable_device_option()->set_device_type(CUDA);
-    predictTrainModel.mutable_device_option()->set_device_type(CUDA);
-    initTestModel.mutable_device_option()->set_device_type(CUDA);
-    predictTestModel.mutable_device_option()->set_device_type(CUDA);
+    trainModel.init.SetDeviceCUDA();
+    trainModel.predict.SetDeviceCUDA();
+    testModel.init.SetDeviceCUDA();
+    testModel.predict.SetDeviceCUDA();
   }
 #endif
 
   std::cout << std::endl;
 
   // >>> workspace.RunNetOnce(train_model.param_init_net)
-  auto initTrainNet = CreateNet(initTrainModel, &workspace);
+  auto initTrainNet = CreateNet(trainModel.init.net, &workspace);
   initTrainNet->Run();
 
   // >>> workspace.CreateNet(train_model.net)
-  auto predictTrainNet = CreateNet(predictTrainModel, &workspace);
+  auto predictTrainNet = CreateNet(trainModel.predict.net, &workspace);
 
   std::cout << "training.." << std::endl;
 
@@ -280,11 +280,11 @@ void run() {
   std::cout << std::endl;
 
   // >>> workspace.RunNetOnce(test_model.param_init_net)
-  auto initTestNet = CreateNet(initTestModel, &workspace);
+  auto initTestNet = CreateNet(testModel.init.net, &workspace);
   initTestNet->Run();
 
   // >>> workspace.CreateNet(test_model.net)
-  auto predictTestNet = CreateNet(predictTestModel, &workspace);
+  auto predictTestNet = CreateNet(testModel.predict.net, &workspace);
 
   std::cout << "testing.." << std::endl;
 
@@ -303,9 +303,9 @@ void run() {
 
   // with open(os.path.join(root_folder, "deploy_net.pbtxt"), 'w') as fid:
   // fid.write(str(deploy_model.net.Proto()))
-  for (auto &param : predictDeployModel.external_input()) {
+  for (auto &param : deployModel.predict.net.external_input()) {
     auto tensor = BlobUtil(*workspace.GetBlob(param)).Get();
-    auto op = initDeployModel.add_op();
+    auto op = deployModel.init.net.add_op();
     op->set_type("GivenTensorFill");
     auto arg1 = op->add_arg();
     arg1->set_name("shape");
@@ -320,9 +320,9 @@ void run() {
     }
     op->add_output(param);
   }
-  WriteProtoToTextFile(predictDeployModel, "tmp/mnist_predict_net.pbtxt");
-  WriteProtoToBinaryFile(initDeployModel, "tmp/mnist_init_net.pb");
-  WriteProtoToBinaryFile(predictDeployModel, "tmp/mnist_predict_net.pb");
+  WriteProtoToTextFile(deployModel.predict.net, "tmp/mnist_predict_net.pbtxt");
+  WriteProtoToBinaryFile(deployModel.init.net, "tmp/mnist_init_net.pb");
+  WriteProtoToBinaryFile(deployModel.predict.net, "tmp/mnist_predict_net.pb");
 }
 
 void predict_example() {

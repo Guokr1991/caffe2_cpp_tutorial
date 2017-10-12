@@ -89,78 +89,76 @@ void run() {
 
   std::cout << "load model.." << std::endl;
   NetDef full_init_model, full_predict_model;
-  Keeper(FLAGS_model).AddModel(full_init_model, full_predict_model, false);
+  ModelUtil full(full_init_model, full_predict_model);
+  Keeper(FLAGS_model).AddModel(full, false);
 
   if (FLAGS_device == "cudnn") {
-    NetUtil(full_init_model).SetEngineOps("CUDNN");
-    NetUtil(full_predict_model).SetEngineOps("CUDNN");
+    full.init.SetEngineOps("CUDNN");
+    full.predict.SetEngineOps("CUDNN");
   }
 
   if (FLAGS_dump_model) {
-    std::cout << NetUtil(full_init_model).Short();
-    std::cout << NetUtil(full_predict_model).Short();
+    std::cout << full.init.Short();
+    std::cout << full.predict.Short();
   }
 
-  NetDef init_model[kRunNum];
-  NetDef predict_model[kRunNum];
+  NetDef init_model[kRunNum], predict_model[kRunNum];
+  ModelUtil models[kRunNum] = {
+      {init_model[kRunTrain], predict_model[kRunTrain]},
+      {init_model[kRunTest], predict_model[kRunTest]},
+      {init_model[kRunValidate], predict_model[kRunValidate]},
+  };
   for (int i = 0; i < kRunNum; i++) {
-    init_model[i].set_name(name_for_run[i] + "_init_model");
-    predict_model[i].set_name(name_for_run[i] + "_predict_model");
+    models[i].init.SetName(name_for_run[i] + "_init_model");
+    models[i].predict.SetName(name_for_run[i] + "_predict_model");
   }
 
   pre_process(image_files, db_paths, FLAGS_db_type, FLAGS_size_to_fit);
   load_time += clock();
 
   for (int i = 0; i < kRunNum; i++) {
-    ModelUtil(init_model[i], predict_model[i])
-        .AddDatabaseOps(name_for_run[i], full_predict_model.external_input(0),
-                        db_paths[i], FLAGS_db_type, FLAGS_batch_size);
+    models[i].AddDatabaseOps(name_for_run[i], full.predict.Input(0),
+                             db_paths[i], FLAGS_db_type, FLAGS_batch_size);
   }
-  copy_train_model(full_init_model, full_predict_model,
-                   full_predict_model.external_input(0), class_labels.size(),
-                   init_model[kRunTrain], predict_model[kRunTrain]);
-  copy_test_model(full_predict_model, predict_model[kRunValidate]);
-  copy_test_model(full_predict_model, predict_model[kRunTest]);
+  full.CopyTrain(full.predict.Input(0), class_labels.size(), models[kRunTrain]);
+  copy_test_model(full.predict.net, models[kRunValidate].predict.net);
+  copy_test_model(full.predict.net, models[kRunTest].predict.net);
 
-  auto output = predict_model[kRunTrain].external_output(0);
+  auto output = models[kRunTrain].predict.Output(0);
   if (FLAGS_reshape_output) {
     auto output_reshaped = output + "_reshaped";
     for (int i = 0; i < kRunNum; i++) {
-      NetUtil(predict_model[i]).AddReshapeOp(output, output_reshaped, {0, -1});
+      models[i].predict.AddReshapeOp(output, output_reshaped, {0, -1});
     }
     output = output_reshaped;
   }
 
-  ModelUtil(init_model[kRunTrain], predict_model[kRunTrain])
-      .AddTrainOps(output, FLAGS_learning_rate, FLAGS_optimizer);
-  ModelUtil(full_predict_model, predict_model[kRunValidate]).AddTestOps(output);
-  ModelUtil(full_predict_model, predict_model[kRunTest]).AddTestOps(output);
+  models[kRunTrain].AddTrainOps(output, FLAGS_learning_rate, FLAGS_optimizer);
+  ModelUtil(full.predict, models[kRunValidate].predict).AddTestOps(output);
+  ModelUtil(full.predict, models[kRunTest].predict).AddTestOps(output);
 
   if (FLAGS_zero_one) {
-    NetUtil(predict_model[kRunValidate])
-        .AddZeroOneOp(output, "label");
+    models[kRunValidate].predict.AddZeroOneOp(output, "label");
   }
   if (FLAGS_display) {
-    NetUtil(predict_model[kRunValidate])
-        .AddShowWorstOp(output, "label",
-                        full_predict_model.external_input(0));
+    models[kRunValidate].predict.AddShowWorstOp(output, "label",
+                                                full.predict.Input(0));
   }
 
   if (FLAGS_display) {
-    NetUtil(predict_model[kRunTrain])
-        .AddTimePlotOp("accuracy", "iter", "accuracy", "train", 10);
-    NetUtil(predict_model[kRunValidate])
-        .AddTimePlotOp("accuracy", "iter", "accuracy", "test");
-    NetUtil(predict_model[kRunTrain])
-        .AddTimePlotOp("loss", "iter", "loss", "train", 10);
-    NetUtil(predict_model[kRunValidate])
-        .AddTimePlotOp("loss", "iter", "loss", "test");
+    models[kRunTrain].predict.AddTimePlotOp("accuracy", "iter", "accuracy",
+                                            "train", 10);
+    models[kRunValidate].predict.AddTimePlotOp("accuracy", "iter", "accuracy",
+                                               "test");
+    models[kRunTrain].predict.AddTimePlotOp("loss", "iter", "loss", "train",
+                                            10);
+    models[kRunValidate].predict.AddTimePlotOp("loss", "iter", "loss", "test");
   }
 
   if (FLAGS_device != "cpu") {
     for (int i = 0; i < kRunNum; i++) {
-      NetUtil(init_model[i]).SetDeviceCUDA();
-      NetUtil(predict_model[i]).SetDeviceCUDA();
+      models[i].init.SetDeviceCUDA();
+      models[i].predict.SetDeviceCUDA();
     }
   }
 
@@ -169,9 +167,9 @@ void run() {
   Workspace workspace("tmp");
   unique_ptr<caffe2::NetBase> predict_net[kRunNum];
   for (int i = 0; i < kRunNum; i++) {
-    auto init_net = CreateNet(init_model[i], &workspace);
+    auto init_net = CreateNet(models[i].init.net, &workspace);
     init_net->Run();
-    predict_net[i] = CreateNet(predict_model[i], &workspace);
+    predict_net[i] = CreateNet(models[i].predict.net, &workspace);
   }
 
   clock_t train_time = 0;
@@ -238,13 +236,14 @@ void run() {
   }
 
   NetDef deploy_init_model;  // the final initialization model
-  deploy_init_model.set_name("train_" + full_init_model.name());
-  for (const auto &op : full_init_model.op()) {
+  ModelUtil deploy(deploy_init_model, full.predict.net);
+  deploy.init.SetName("train_" + full.init.net.name());
+  for (const auto &op : full.init.net.op()) {
     auto &output = op.output(0);
     auto blob = workspace.GetBlob(output);
     if (blob) {
       auto tensor = BlobUtil(*blob).Get();
-      auto init_op = deploy_init_model.add_op();
+      auto init_op = deploy.init.net.add_op();
       init_op->set_type("GivenTensorFill");
       auto arg1 = init_op->add_arg();
       arg1->set_name("shape");
@@ -259,14 +258,14 @@ void run() {
       }
       init_op->add_output(output);
     } else {
-      deploy_init_model.add_op()->CopyFrom(op);
+      deploy.init.net.add_op()->CopyFrom(op);
     }
   }
 
   auto init_path = path_prefix + FLAGS_model + "_init_net.pb";
   auto predict_path = path_prefix + FLAGS_model + "_predict_net.pb";
-  WriteProtoToBinaryFile(deploy_init_model, init_path);
-  WriteProtoToBinaryFile(full_predict_model, predict_path);
+  WriteProtoToBinaryFile(deploy.init.net, init_path);
+  WriteProtoToBinaryFile(full.predict.net, predict_path);
   auto init_size =
       std::ifstream(init_path, std::ifstream::ate | std::ifstream::binary)
           .tellg();

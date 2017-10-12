@@ -70,11 +70,11 @@ void run() {
   std::cout << "loading model.." << std::endl;
   clock_t load_time = 0;
   NetDef init_model, predict_model;
-  NetUtil init(init_model), predict(predict_model);
+  ModelUtil model(init_model, predict_model);
 
   // read model files
   load_time -= clock();
-  Keeper(FLAGS_model).AddModel(init_model, predict_model, true);
+  Keeper(FLAGS_model).AddModel(model, true);
   load_time += clock();
 
   // get model size
@@ -88,13 +88,13 @@ void run() {
 
   // set model to use CUDA
   if (FLAGS_device != "cpu") {
-    init.SetDeviceCUDA();
-    predict.SetDeviceCUDA();
+    model.init.SetDeviceCUDA();
+    model.predict.SetDeviceCUDA();
   }
 
   if (FLAGS_dump_model) {
-    std::cout << init.Short();
-    std::cout << predict.Short();
+    std::cout << model.init.Short();
+    std::cout << model.predict.Short();
   }
 
   std::cout << "running model.." << std::endl;
@@ -102,10 +102,10 @@ void run() {
   Workspace workspace;
 
   // setup workspace
-  auto &input_name = predict_model.external_input(0);
-  auto &output_name = predict_model.external_output(0);
-  auto init_net = CreateNet(init_model, &workspace);
-  auto predict_net = CreateNet(predict_model, &workspace);
+  auto &input_name = model.predict.Input(0);
+  auto &output_name = model.predict.Output(0);
+  auto init_net = CreateNet(model.init.net, &workspace);
+  auto predict_net = CreateNet(model.predict.net, &workspace);
   init_net->Run();
 
   // run predictor

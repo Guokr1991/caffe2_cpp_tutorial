@@ -43,6 +43,10 @@ class ModelUtil {
 
   std::vector<std::string> Params() { return predict.CollectParams(); }
 
+  void Split(const std::string &layer, ModelUtil &firstModel,
+             ModelUtil &secondModel, bool force_cpu, bool inclusive = true);
+  void CopyTrain(const std::string &layer, int out_size, ModelUtil &train);
+
  public:
   NetUtil init;
   NetUtil predict;

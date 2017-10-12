@@ -982,8 +982,8 @@ OperatorDef* NetUtil::AddRecurrentNetworkOp(const std::string& seq_lengths,
                                             const std::string& hidden_output,
                                             const std::string& cell_state,
                                             bool force_cpu) {
-  NetDef forwardModel;
-  NetUtil forward(forwardModel);
+  NetDef forward_model;
+  NetUtil forward(forward_model);
   forward.SetName(scope);
   forward.SetType("rnn");
   forward.AddInput("input_t");
@@ -1009,12 +1009,12 @@ OperatorDef* NetUtil::AddRecurrentNetworkOp(const std::string& seq_lengths,
     fc->mutable_device_option()->set_device_type(CUDA);
     sum->mutable_device_option()->set_device_type(CUDA);
     lstm->mutable_device_option()->set_device_type(CUDA);
-    forwardModel.mutable_device_option()->set_device_type(CUDA);
+    forward.SetDeviceCUDA();
   }
 #endif
 
-  NetDef backwardModel;
-  NetUtil backward(backwardModel);
+  NetDef backward_model;
+  NetUtil backward(backward_model);
   backward.SetName("RecurrentBackwardStep");
   backward.SetType("simple");
   backward.AddGradientOp(*lstm);
@@ -1035,11 +1035,9 @@ OperatorDef* NetUtil::AddRecurrentNetworkOp(const std::string& seq_lengths,
   backward.AddInput(seq_lengths);
   backward.AddInput(scope + "/hidden_t");
   backward.AddInput(scope + "/cell_t");
-#ifdef WITH_CUDA
   if (!force_cpu) {
-    backwardModel.mutable_device_option()->set_device_type(CUDA);
+    backward.SetDeviceCUDA();
   }
-#endif
 
   auto op =
       AddOp("RecurrentNetwork",
@@ -1096,6 +1094,16 @@ OperatorDef* NetUtil::AddRecurrentNetworkOp(const std::string& seq_lengths,
                                scope + "/" + scope + "/cell_t_prev_states"});
   net_add_arg(*op, "initial_recurrent_state_ids", std::vector<int>{1, 2});
   return op;
+}
+
+void set_trainable(OperatorDef& op, bool train) {
+  if (op.type() == "Dropout") {
+    for (auto& arg : *op.mutable_arg()) {
+      if (arg.name() == "is_test") {
+        arg.set_i(!train);
+      }
+    }
+  }
 }
 
 }  // namespace caffe2
